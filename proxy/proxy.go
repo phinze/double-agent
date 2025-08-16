@@ -22,6 +22,13 @@ func NewAgentProxy(proxySocket string) *AgentProxy {
 	}
 }
 
+func (ap *AgentProxy) InvalidateCache() {
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	ap.activeSocket = ""
+	ap.lastCheck = time.Time{}
+}
+
 func (ap *AgentProxy) FindActiveSocketCached() string {
 	ap.mu.Lock()
 	defer ap.mu.Unlock()
@@ -32,6 +39,7 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 		if TestSocket(ap.activeSocket) {
 			return ap.activeSocket
 		}
+		log.Printf("Cached socket %s is no longer valid, finding new one", ap.activeSocket)
 	}
 
 	// Find a new active socket
@@ -42,6 +50,10 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 		return ""
 	}
 
+	if ap.activeSocket != activeSocket {
+		log.Printf("Active socket changed from %s to %s", ap.activeSocket, activeSocket)
+	}
+
 	ap.activeSocket = activeSocket
 	ap.lastCheck = time.Now()
 	return activeSocket
@@ -50,44 +62,60 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 	defer clientConn.Close()
 
-	activeSocket := ap.FindActiveSocketCached()
-	if activeSocket == "" {
-		log.Printf("No active SSH agent socket found")
-		// Send SSH_AGENT_FAILURE response
-		failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-		clientConn.Write(failureMsg)
+	// Try up to 2 times (once with cached, once with fresh discovery)
+	for attempt := 0; attempt < 2; attempt++ {
+		activeSocket := ap.FindActiveSocketCached()
+		if activeSocket == "" {
+			log.Printf("No active SSH agent socket found (attempt %d)", attempt+1)
+			if attempt == 1 {
+				// Send SSH_AGENT_FAILURE response after final attempt
+				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
+				clientConn.Write(failureMsg)
+			}
+			continue
+		}
+
+		agentConn, err := net.Dial("unix", activeSocket)
+		if err != nil {
+			log.Printf("Failed to connect to agent socket %s: %v (attempt %d)", activeSocket, err, attempt+1)
+			// Invalidate cache so next attempt finds a fresh socket
+			ap.InvalidateCache()
+			if attempt == 1 {
+				// Send SSH_AGENT_FAILURE response after final attempt
+				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
+				clientConn.Write(failureMsg)
+			}
+			continue
+		}
+		defer agentConn.Close()
+
+		// Successfully connected, proceed with proxy
+		done := make(chan error, 2)
+
+		// Copy from client to agent
+		go func() {
+			_, err := io.Copy(agentConn, clientConn)
+			done <- err
+		}()
+
+		// Copy from agent to client
+		go func() {
+			_, err := io.Copy(clientConn, agentConn)
+			done <- err
+		}()
+
+		// Wait for one side to finish
+		err = <-done
+
+		// If we had an error during communication, invalidate cache
+		if err != nil && err != io.EOF {
+			log.Printf("Connection error: %v", err)
+			ap.InvalidateCache()
+		}
+
+		// Connection handled successfully
 		return
 	}
-
-	agentConn, err := net.Dial("unix", activeSocket)
-	if err != nil {
-		log.Printf("Failed to connect to agent socket %s: %v", activeSocket, err)
-		// Send SSH_AGENT_FAILURE response
-		failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-		clientConn.Write(failureMsg)
-		return
-	}
-	defer agentConn.Close()
-
-	// Bidirectional proxy
-	done := make(chan error, 2)
-
-	// Copy from client to agent
-	go func() {
-		_, err := io.Copy(agentConn, clientConn)
-		done <- err
-	}()
-
-	// Copy from agent to client
-	go func() {
-		_, err := io.Copy(clientConn, agentConn)
-		done <- err
-	}()
-
-	// Wait for one side to finish
-	<-done
-
-	// The connection is done, let both goroutines finish naturally
 }
 
 func (ap *AgentProxy) Start() error {
