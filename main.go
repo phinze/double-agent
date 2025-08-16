@@ -4,7 +4,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -51,39 +50,22 @@ func main() {
 		log.Fatalf("Failed to create socket directory: %v", err)
 	}
 
-	// Create Unix domain socket listener
-	listener, err := net.Listen("unix", proxySocket)
-	if err != nil {
-		log.Fatalf("Failed to create proxy socket: %v", err)
-	}
-	defer listener.Close()
-
-	// Set appropriate permissions (owner read/write only)
-	if err := os.Chmod(proxySocket, 0600); err != nil {
+	// Set appropriate permissions
+	if err := os.Chmod(proxySocket, 0600); err != nil && !os.IsNotExist(err) {
 		log.Fatalf("Failed to set socket permissions: %v", err)
 	}
 
-	log.Printf("Double Agent proxy listening on %s", proxySocket)
+	// Create the proxy
+	agentProxy := proxy.NewAgentProxy(proxySocket)
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Accept connections in a goroutine
+	// Start proxy in a goroutine
 	go func() {
-		for {
-			conn, err := listener.Accept()
-			if err != nil {
-				// Check if error is due to closed listener
-				if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
-					return
-				}
-				log.Printf("Accept error: %v", err)
-				continue
-			}
-
-			// Handle connection
-			go handleConnection(conn)
+		if err := agentProxy.Start(); err != nil {
+			log.Printf("Proxy error: %v", err)
 		}
 	}()
 
@@ -92,43 +74,23 @@ func main() {
 	log.Printf("Received signal %v, shutting down", sig)
 
 	// Clean up socket
-	listener.Close()
 	os.Remove(proxySocket)
-}
-
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
-	
-	// For Phase 2, let's show which socket we would connect to
-	log.Printf("Accepted connection from %s", conn.RemoteAddr())
-	
-	activeSocket, err := proxy.FindActiveSocket()
-	if err != nil {
-		log.Printf("No active socket found: %v", err)
-		errorMsg := "No active SSH agent socket found\n"
-		conn.Write([]byte(errorMsg))
-		return
-	}
-	
-	log.Printf("Would forward to active socket: %s", activeSocket)
-	errorMsg := fmt.Sprintf("Would forward to: %s (not yet implemented)\n", activeSocket)
-	conn.Write([]byte(errorMsg))
 }
 
 func testSocketDiscovery() {
 	fmt.Println("Testing SSH agent socket discovery...")
 	fmt.Println()
-	
+
 	sockets, err := proxy.DiscoverSockets()
 	if err != nil {
 		log.Fatalf("Discovery failed: %v", err)
 	}
-	
+
 	if len(sockets) == 0 {
 		fmt.Println("No SSH agent sockets found")
 		return
 	}
-	
+
 	fmt.Printf("Found %d socket(s):\n", len(sockets))
 	for _, socket := range sockets {
 		status := "STALE"
@@ -138,7 +100,7 @@ func testSocketDiscovery() {
 		fmt.Printf("  %s [%s]\n", socket.Path, status)
 		fmt.Printf("    Modified: %s\n", socket.ModTime.Format("2006-01-02 15:04:05"))
 	}
-	
+
 	fmt.Println()
 	activeSocket, err := proxy.FindActiveSocket()
 	if err != nil {

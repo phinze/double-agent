@@ -92,7 +92,7 @@ func TestSocket(socketPath string) bool {
 	header := make([]byte, 5)
 	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, err := io.ReadFull(conn, header)
-	
+
 	// Check if we got a valid response
 	if err != nil || n != 5 {
 		return false

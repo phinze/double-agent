@@ -46,14 +46,14 @@ go run main.go --test-discovery
 
 ---
 
-## Phase 3: Basic Proxy (Pass-through)
+## Phase 3: Basic Proxy (Pass-through) ✅
 **Goal:** Forward connections from our socket to a real SSH agent.
 
 ### Implementation
-- [ ] Create `proxy/proxy.go` with core proxy structure
-- [ ] Implement bidirectional data copying
-- [ ] Add connection handling goroutines
-- [ ] Integrate discovery to find active socket
+- [x] Create `proxy/proxy.go` with core proxy structure
+- [x] Implement bidirectional data copying
+- [x] Add connection handling goroutines
+- [x] Integrate discovery to find active socket
 
 ### Verification
 ```bash
