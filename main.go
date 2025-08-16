@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -8,18 +9,30 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+
+	"github.com/phinze/double-agent/proxy"
 )
 
 func main() {
-	if len(os.Args) != 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <proxy-socket-path>\n", os.Args[0])
+	testDiscovery := flag.Bool("test-discovery", false, "Test socket discovery and exit")
+	flag.Parse()
+
+	if *testDiscovery {
+		testSocketDiscovery()
+		return
+	}
+
+	if len(flag.Args()) != 1 {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] <proxy-socket-path>\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  --test-discovery  Test socket discovery and exit\n")
 		os.Exit(1)
 	}
 
-	proxySocket := os.Args[1]
+	proxySocket := flag.Args()[0]
 
 	// Expand ~ to home directory
-	if proxySocket[:2] == "~/" {
+	if len(proxySocket) >= 2 && proxySocket[:2] == "~/" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("Failed to get home directory: %v", err)
@@ -86,11 +99,51 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	
-	// For Phase 1, just acknowledge the connection and close
+	// For Phase 2, let's show which socket we would connect to
 	log.Printf("Accepted connection from %s", conn.RemoteAddr())
 	
-	// Send a simple error message for now
-	// In later phases, this will forward to the real SSH agent
-	errorMsg := "SSH agent proxy not yet implemented\n"
+	activeSocket, err := proxy.FindActiveSocket()
+	if err != nil {
+		log.Printf("No active socket found: %v", err)
+		errorMsg := "No active SSH agent socket found\n"
+		conn.Write([]byte(errorMsg))
+		return
+	}
+	
+	log.Printf("Would forward to active socket: %s", activeSocket)
+	errorMsg := fmt.Sprintf("Would forward to: %s (not yet implemented)\n", activeSocket)
 	conn.Write([]byte(errorMsg))
+}
+
+func testSocketDiscovery() {
+	fmt.Println("Testing SSH agent socket discovery...")
+	fmt.Println()
+	
+	sockets, err := proxy.DiscoverSockets()
+	if err != nil {
+		log.Fatalf("Discovery failed: %v", err)
+	}
+	
+	if len(sockets) == 0 {
+		fmt.Println("No SSH agent sockets found")
+		return
+	}
+	
+	fmt.Printf("Found %d socket(s):\n", len(sockets))
+	for _, socket := range sockets {
+		status := "STALE"
+		if socket.Valid {
+			status = "VALID"
+		}
+		fmt.Printf("  %s [%s]\n", socket.Path, status)
+		fmt.Printf("    Modified: %s\n", socket.ModTime.Format("2006-01-02 15:04:05"))
+	}
+	
+	fmt.Println()
+	activeSocket, err := proxy.FindActiveSocket()
+	if err != nil {
+		fmt.Printf("No active socket found: %v\n", err)
+	} else {
+		fmt.Printf("Active socket: %s\n", activeSocket)
+	}
 }
