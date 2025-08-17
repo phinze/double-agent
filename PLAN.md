@@ -120,7 +120,7 @@ SSH_AUTH_SOCK=~/.ssh/test_agent git commit -S -m "test"
 - [ ] Add shell integration scripts
 - [ ] Implement proper logging (no sensitive data)
 - [ ] Add health check endpoint/mechanism
-- [ ] Create Makefile for building/installing
+- [ ] Create a Nix package and a Home Manager module for installing
 
 ### Verification
 ```bash

@@ -19,18 +19,6 @@
           go
           golangci-lint
         ];
-
-        shellHook = ''
-          echo "Double Agent development environment"
-          echo "Go version: $(go version)"
-          echo ""
-          echo "Available commands:"
-          echo "  go build    - Build the project"
-          echo "  go test     - Run tests"
-          echo "  go run      - Run the application"
-          echo ""
-        '';
       };
     });
 }
-
