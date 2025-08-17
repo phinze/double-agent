@@ -76,7 +76,10 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 			if attempt == 1 {
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-				_, _ = clientConn.Write(failureMsg)
+				if _, err := clientConn.Write(failureMsg); err != nil {
+					ap.logger.Debug("Failed to send agent failure response to client",
+						"error", err)
+				}
 			}
 			continue
 		}
@@ -92,7 +95,10 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 			if attempt == 1 {
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-				_, _ = clientConn.Write(failureMsg)
+				if _, err := clientConn.Write(failureMsg); err != nil {
+					ap.logger.Debug("Failed to send agent failure response to client",
+						"error", err)
+				}
 			}
 			continue
 		}
