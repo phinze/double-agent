@@ -12,19 +12,81 @@ import (
 	"github.com/phinze/double-agent/proxy"
 )
 
+var (
+	version = "dev" // Can be overridden at build time
+)
+
 func main() {
-	testDiscovery := flag.Bool("test-discovery", false, "Test socket discovery and exit")
+	var (
+		verbose       = flag.Bool("v", false, "Enable verbose logging")
+		verboseLong   = flag.Bool("verbose", false, "Enable verbose logging")
+		daemon        = flag.Bool("d", false, "Run as daemon (detach from terminal)")
+		daemonLong    = flag.Bool("daemon", false, "Run as daemon (detach from terminal)")
+		testDiscovery = flag.Bool("test-discovery", false, "Test socket discovery and exit")
+		showVersion   = flag.Bool("version", false, "Show version and exit")
+		showHelp      = flag.Bool("h", false, "Show help")
+		showHelpLong  = flag.Bool("help", false, "Show help")
+	)
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Double Agent - SSH Agent Proxy v%s\n\n", version)
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] <proxy-socket-path>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Arguments:\n")
+		fmt.Fprintf(os.Stderr, "  proxy-socket-path    Path to create the proxy socket (e.g., ~/.ssh/agent)\n\n")
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		fmt.Fprintf(os.Stderr, "  -v, --verbose        Enable verbose logging\n")
+		fmt.Fprintf(os.Stderr, "  -d, --daemon         Run as daemon (detach from terminal)\n")
+		fmt.Fprintf(os.Stderr, "  --test-discovery     Test socket discovery and exit\n")
+		fmt.Fprintf(os.Stderr, "  --version            Show version and exit\n")
+		fmt.Fprintf(os.Stderr, "  -h, --help           Show this help message\n\n")
+		fmt.Fprintf(os.Stderr, "Examples:\n")
+		fmt.Fprintf(os.Stderr, "  # Start proxy in foreground\n")
+		fmt.Fprintf(os.Stderr, "  %s ~/.ssh/agent\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Start proxy as daemon\n")
+		fmt.Fprintf(os.Stderr, "  %s -d ~/.ssh/agent\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Test socket discovery\n")
+		fmt.Fprintf(os.Stderr, "  %s --test-discovery\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Environment:\n")
+		fmt.Fprintf(os.Stderr, "  Set SSH_AUTH_SOCK to the proxy socket path to use it:\n")
+		fmt.Fprintf(os.Stderr, "  export SSH_AUTH_SOCK=\"$HOME/.ssh/agent\"\n")
+	}
+
 	flag.Parse()
 
+	// Handle version flag
+	if *showVersion {
+		fmt.Printf("double-agent version %s\n", version)
+		os.Exit(0)
+	}
+
+	// Handle help flag
+	if *showHelp || *showHelpLong {
+		flag.Usage()
+		os.Exit(0)
+	}
+
+	// Combine verbose flags
+	verbose = boolPtr(*verbose || *verboseLong)
+	daemon = boolPtr(*daemon || *daemonLong)
+
+	// Configure logging
+	if !*verbose {
+		// In non-verbose mode, only show warnings and errors
+		log.SetFlags(0)
+	} else {
+		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	}
+
+	// Handle test discovery mode
 	if *testDiscovery {
 		testSocketDiscovery()
 		return
 	}
 
+	// Check for required argument
 	if len(flag.Args()) != 1 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <proxy-socket-path>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "Options:\n")
-		fmt.Fprintf(os.Stderr, "  --test-discovery  Test socket discovery and exit\n")
+		fmt.Fprintf(os.Stderr, "Error: proxy socket path is required\n\n")
+		flag.Usage()
 		os.Exit(1)
 	}
 
@@ -39,9 +101,22 @@ func main() {
 		proxySocket = filepath.Join(home, proxySocket[2:])
 	}
 
+	// Daemonize if requested
+	if *daemon {
+		daemonize(proxySocket, *verbose)
+		return
+	}
+
+	// Run the proxy
+	runProxy(proxySocket, *verbose)
+}
+
+func runProxy(proxySocket string, verbose bool) {
 	// Remove existing socket if it exists
 	if err := os.Remove(proxySocket); err != nil && !os.IsNotExist(err) {
-		log.Printf("Warning: failed to remove existing socket: %v", err)
+		if verbose {
+			log.Printf("Warning: failed to remove existing socket: %v", err)
+		}
 	}
 
 	// Create directory if it doesn't exist
@@ -60,21 +135,73 @@ func main() {
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 
 	// Start proxy in a goroutine
+	proxyDone := make(chan error, 1)
 	go func() {
-		if err := agentProxy.Start(); err != nil {
-			log.Printf("Proxy error: %v", err)
-		}
+		proxyDone <- agentProxy.Start()
 	}()
 
-	// Wait for shutdown signal
-	sig := <-sigChan
-	log.Printf("Received signal %v, shutting down", sig)
+	// Print startup message
+	fmt.Printf("Double Agent proxy started on %s\n", proxySocket)
+	if verbose {
+		log.Printf("Verbose logging enabled")
+		log.Printf("PID: %d", os.Getpid())
+	}
+
+	// Wait for shutdown signal or proxy error
+	select {
+	case sig := <-sigChan:
+		if verbose {
+			log.Printf("Received signal %v, shutting down", sig)
+		} else {
+			fmt.Printf("Shutting down...\n")
+		}
+	case err := <-proxyDone:
+		if err != nil {
+			log.Fatalf("Proxy error: %v", err)
+		}
+	}
 
 	// Clean up socket
 	os.Remove(proxySocket)
+}
+
+func daemonize(proxySocket string, verbose bool) {
+	// Find the executable path
+	executable, err := os.Executable()
+	if err != nil {
+		log.Fatalf("Failed to find executable: %v", err)
+	}
+
+	// Build arguments for the child process
+	args := []string{executable}
+	if verbose {
+		args = append(args, "-v")
+	}
+	args = append(args, proxySocket)
+
+	// Start the process detached
+	process, err := os.StartProcess(
+		executable,
+		args,
+		&os.ProcAttr{
+			Dir:   ".",
+			Env:   os.Environ(),
+			Files: []*os.File{nil, nil, nil}, // Detach from stdin/stdout/stderr
+		},
+	)
+
+	if err != nil {
+		log.Fatalf("Failed to start daemon: %v", err)
+	}
+
+	fmt.Printf("Double Agent daemon started (PID: %d)\n", process.Pid)
+	fmt.Printf("Socket: %s\n", proxySocket)
+
+	// Release the process so it continues running
+	process.Release()
 }
 
 func testSocketDiscovery() {
@@ -108,4 +235,8 @@ func testSocketDiscovery() {
 	} else {
 		fmt.Printf("Active socket: %s\n", activeSocket)
 	}
+}
+
+func boolPtr(b bool) *bool {
+	return &b
 }
