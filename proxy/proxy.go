@@ -3,7 +3,7 @@ package proxy
 import (
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -14,11 +14,13 @@ type AgentProxy struct {
 	mu           sync.RWMutex
 	lastCheck    time.Time
 	activeSocket string
+	logger       *slog.Logger
 }
 
-func NewAgentProxy(proxySocket string) *AgentProxy {
+func NewAgentProxy(proxySocket string, logger *slog.Logger) *AgentProxy {
 	return &AgentProxy{
 		proxySocket: proxySocket,
+		logger:      logger,
 	}
 }
 
@@ -39,19 +41,22 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 		if TestSocket(ap.activeSocket) {
 			return ap.activeSocket
 		}
-		log.Printf("Cached socket %s is no longer valid, finding new one", ap.activeSocket)
+		ap.logger.Debug("Cached socket is no longer valid, finding new one",
+			"socket", ap.activeSocket)
 	}
 
 	// Find a new active socket
 	activeSocket, err := FindActiveSocket()
 	if err != nil {
-		log.Printf("Failed to find active socket: %v", err)
+		ap.logger.Error("Failed to find active socket", "error", err)
 		ap.activeSocket = ""
 		return ""
 	}
 
 	if ap.activeSocket != activeSocket {
-		log.Printf("Active socket changed from %s to %s", ap.activeSocket, activeSocket)
+		ap.logger.Info("Active socket changed",
+			"from", ap.activeSocket,
+			"to", activeSocket)
 	}
 
 	ap.activeSocket = activeSocket
@@ -66,7 +71,8 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 	for attempt := 0; attempt < 2; attempt++ {
 		activeSocket := ap.FindActiveSocketCached()
 		if activeSocket == "" {
-			log.Printf("No active SSH agent socket found (attempt %d)", attempt+1)
+			ap.logger.Debug("No active SSH agent socket found",
+				"attempt", attempt+1)
 			if attempt == 1 {
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
@@ -77,7 +83,10 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 
 		agentConn, err := net.Dial("unix", activeSocket)
 		if err != nil {
-			log.Printf("Failed to connect to agent socket %s: %v (attempt %d)", activeSocket, err, attempt+1)
+			ap.logger.Debug("Failed to connect to agent socket",
+				"socket", activeSocket,
+				"error", err,
+				"attempt", attempt+1)
 			// Invalidate cache so next attempt finds a fresh socket
 			ap.InvalidateCache()
 			if attempt == 1 {
@@ -109,7 +118,7 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 
 		// If we had an error during communication, invalidate cache
 		if err != nil && err != io.EOF {
-			log.Printf("Connection error: %v", err)
+			ap.logger.Debug("Connection error", "error", err)
 			ap.InvalidateCache()
 		}
 
@@ -125,7 +134,7 @@ func (ap *AgentProxy) Start() error {
 	}
 	defer listener.Close()
 
-	log.Printf("SSH Agent proxy listening on %s", ap.proxySocket)
+	ap.logger.Info("SSH Agent proxy listening", "socket", ap.proxySocket)
 
 	for {
 		conn, err := listener.Accept()
@@ -134,7 +143,7 @@ func (ap *AgentProxy) Start() error {
 			if opErr, ok := err.(*net.OpError); ok && opErr.Err.Error() == "use of closed network connection" {
 				return nil
 			}
-			log.Printf("Accept error: %v", err)
+			ap.logger.Error("Accept error", "error", err)
 			continue
 		}
 

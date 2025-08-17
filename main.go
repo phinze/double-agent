@@ -3,7 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +23,7 @@ func main() {
 		daemon        = flag.Bool("d", false, "Run as daemon (detach from terminal)")
 		daemonLong    = flag.Bool("daemon", false, "Run as daemon (detach from terminal)")
 		testDiscovery = flag.Bool("test-discovery", false, "Test socket discovery and exit")
+		healthCheck   = flag.Bool("health", false, "Check if proxy is healthy and exit")
 		showVersion   = flag.Bool("version", false, "Show version and exit")
 		showHelp      = flag.Bool("h", false, "Show help")
 		showHelpLong  = flag.Bool("help", false, "Show help")
@@ -37,6 +38,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -v, --verbose        Enable verbose logging\n")
 		fmt.Fprintf(os.Stderr, "  -d, --daemon         Run as daemon (detach from terminal)\n")
 		fmt.Fprintf(os.Stderr, "  --test-discovery     Test socket discovery and exit\n")
+		fmt.Fprintf(os.Stderr, "  --health             Check if proxy is healthy and exit\n")
 		fmt.Fprintf(os.Stderr, "  --version            Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -h, --help           Show this help message\n\n")
 		fmt.Fprintf(os.Stderr, "Examples:\n")
@@ -46,6 +48,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  %s -d ~/.ssh/agent\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  # Test socket discovery\n")
 		fmt.Fprintf(os.Stderr, "  %s --test-discovery\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  # Check proxy health\n")
+		fmt.Fprintf(os.Stderr, "  %s --health ~/.ssh/agent\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Environment:\n")
 		fmt.Fprintf(os.Stderr, "  Set SSH_AUTH_SOCK to the proxy socket path to use it:\n")
 		fmt.Fprintf(os.Stderr, "  export SSH_AUTH_SOCK=\"$HOME/.ssh/agent\"\n")
@@ -70,17 +74,38 @@ func main() {
 	daemon = boolPtr(*daemon || *daemonLong)
 
 	// Configure logging
-	if !*verbose {
-		// In non-verbose mode, only show warnings and errors
-		log.SetFlags(0)
-	} else {
-		log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	logLevel := slog.LevelInfo
+	if *verbose {
+		logLevel = slog.LevelDebug
 	}
+
+	opts := &slog.HandlerOptions{
+		Level: logLevel,
+	}
+	handler := slog.NewTextHandler(os.Stderr, opts)
+	sanitized := proxy.NewSanitizingHandler(handler)
+	logger := slog.New(sanitized)
 
 	// Handle test discovery mode
 	if *testDiscovery {
 		testSocketDiscovery()
 		return
+	}
+
+	// Handle health check mode
+	if *healthCheck {
+		if len(flag.Args()) != 1 {
+			fmt.Fprintf(os.Stderr, "Error: proxy socket path is required for health check\n\n")
+			flag.Usage()
+			os.Exit(1)
+		}
+		proxySocket := expandPath(flag.Args()[0], logger)
+		if err := proxy.HealthCheck(proxySocket, logger); err != nil {
+			fmt.Printf("Proxy unhealthy: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("Proxy is healthy at %s\n", proxySocket)
+		os.Exit(0)
 	}
 
 	// Check for required argument
@@ -90,48 +115,39 @@ func main() {
 		os.Exit(1)
 	}
 
-	proxySocket := flag.Args()[0]
-
-	// Expand ~ to home directory
-	if len(proxySocket) >= 2 && proxySocket[:2] == "~/" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			log.Fatalf("Failed to get home directory: %v", err)
-		}
-		proxySocket = filepath.Join(home, proxySocket[2:])
-	}
+	proxySocket := expandPath(flag.Args()[0], logger)
 
 	// Daemonize if requested
 	if *daemon {
-		daemonize(proxySocket, *verbose)
+		daemonize(proxySocket, *verbose, logger)
 		return
 	}
 
 	// Run the proxy
-	runProxy(proxySocket, *verbose)
+	runProxy(proxySocket, logger)
 }
 
-func runProxy(proxySocket string, verbose bool) {
+func runProxy(proxySocket string, logger *slog.Logger) {
 	// Remove existing socket if it exists
 	if err := os.Remove(proxySocket); err != nil && !os.IsNotExist(err) {
-		if verbose {
-			log.Printf("Warning: failed to remove existing socket: %v", err)
-		}
+		logger.Debug("Warning: failed to remove existing socket", "error", err)
 	}
 
 	// Create directory if it doesn't exist
 	socketDir := filepath.Dir(proxySocket)
 	if err := os.MkdirAll(socketDir, 0700); err != nil {
-		log.Fatalf("Failed to create socket directory: %v", err)
+		logger.Error("Failed to create socket directory", "error", err)
+		os.Exit(1)
 	}
 
 	// Set appropriate permissions
 	if err := os.Chmod(proxySocket, 0600); err != nil && !os.IsNotExist(err) {
-		log.Fatalf("Failed to set socket permissions: %v", err)
+		logger.Error("Failed to set socket permissions", "error", err)
+		os.Exit(1)
 	}
 
 	// Create the proxy
-	agentProxy := proxy.NewAgentProxy(proxySocket)
+	agentProxy := proxy.NewAgentProxy(proxySocket, logger)
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -144,23 +160,17 @@ func runProxy(proxySocket string, verbose bool) {
 	}()
 
 	// Print startup message
-	fmt.Printf("Double Agent proxy started on %s\n", proxySocket)
-	if verbose {
-		log.Printf("Verbose logging enabled")
-		log.Printf("PID: %d", os.Getpid())
-	}
+	logger.Info("Double Agent proxy started", "socket", proxySocket)
+	logger.Debug("Process started", "pid", os.Getpid())
 
 	// Wait for shutdown signal or proxy error
 	select {
 	case sig := <-sigChan:
-		if verbose {
-			log.Printf("Received signal %v, shutting down", sig)
-		} else {
-			fmt.Printf("Shutting down...\n")
-		}
+		logger.Info("Received signal, shutting down", "signal", sig)
 	case err := <-proxyDone:
 		if err != nil {
-			log.Fatalf("Proxy error: %v", err)
+			logger.Error("Proxy error", "error", err)
+			os.Exit(1)
 		}
 	}
 
@@ -168,11 +178,12 @@ func runProxy(proxySocket string, verbose bool) {
 	os.Remove(proxySocket)
 }
 
-func daemonize(proxySocket string, verbose bool) {
+func daemonize(proxySocket string, verbose bool, logger *slog.Logger) {
 	// Find the executable path
 	executable, err := os.Executable()
 	if err != nil {
-		log.Fatalf("Failed to find executable: %v", err)
+		logger.Error("Failed to find executable", "error", err)
+		os.Exit(1)
 	}
 
 	// Build arguments for the child process
@@ -194,7 +205,8 @@ func daemonize(proxySocket string, verbose bool) {
 	)
 
 	if err != nil {
-		log.Fatalf("Failed to start daemon: %v", err)
+		logger.Error("Failed to start daemon", "error", err)
+		os.Exit(1)
 	}
 
 	fmt.Printf("Double Agent daemon started (PID: %d)\n", process.Pid)
@@ -210,7 +222,8 @@ func testSocketDiscovery() {
 
 	sockets, err := proxy.DiscoverSockets()
 	if err != nil {
-		log.Fatalf("Discovery failed: %v", err)
+		fmt.Fprintf(os.Stderr, "Discovery failed: %v\n", err)
+		os.Exit(1)
 	}
 
 	if len(sockets) == 0 {
@@ -239,4 +252,17 @@ func testSocketDiscovery() {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+func expandPath(path string, logger *slog.Logger) string {
+	// Expand ~ to home directory
+	if len(path) >= 2 && path[:2] == "~/" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			logger.Error("Failed to get home directory", "error", err)
+			os.Exit(1)
+		}
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
