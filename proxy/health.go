@@ -15,7 +15,7 @@ func HealthCheck(socketPath string, logger *slog.Logger) error {
 	if err != nil {
 		return fmt.Errorf("failed to connect to proxy socket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send SSH_AGENTC_REQUEST_IDENTITIES request
 	request := []byte{0, 0, 0, 1, SSH_AGENTC_REQUEST_IDENTITIES}
@@ -24,7 +24,7 @@ func HealthCheck(socketPath string, logger *slog.Logger) error {
 	}
 
 	// Set read timeout
-	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 	// Read response header (4 bytes for length)
 	header := make([]byte, 4)

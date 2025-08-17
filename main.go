@@ -175,7 +175,7 @@ func runProxy(proxySocket string, logger *slog.Logger) {
 	}
 
 	// Clean up socket
-	os.Remove(proxySocket)
+	_ = os.Remove(proxySocket)
 }
 
 func daemonize(proxySocket string, verbose bool, logger *slog.Logger) {
@@ -213,7 +213,7 @@ func daemonize(proxySocket string, verbose bool, logger *slog.Logger) {
 	fmt.Printf("Socket: %s\n", proxySocket)
 
 	// Release the process so it continues running
-	process.Release()
+	_ = process.Release()
 }
 
 func testSocketDiscovery() {

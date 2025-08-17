@@ -65,7 +65,7 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 }
 
 func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
-	defer clientConn.Close()
+	defer func() { _ = clientConn.Close() }()
 
 	// Try up to 2 times (once with cached, once with fresh discovery)
 	for attempt := 0; attempt < 2; attempt++ {
@@ -76,7 +76,7 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 			if attempt == 1 {
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-				clientConn.Write(failureMsg)
+				_, _ = clientConn.Write(failureMsg)
 			}
 			continue
 		}
@@ -92,11 +92,11 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 			if attempt == 1 {
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
-				clientConn.Write(failureMsg)
+				_, _ = clientConn.Write(failureMsg)
 			}
 			continue
 		}
-		defer agentConn.Close()
+		defer func() { _ = agentConn.Close() }()
 
 		// Successfully connected, proceed with proxy
 		done := make(chan error, 2)
@@ -132,7 +132,7 @@ func (ap *AgentProxy) Start() error {
 	if err != nil {
 		return fmt.Errorf("failed to create proxy socket: %v", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	ap.logger.Info("SSH Agent proxy listening", "socket", ap.proxySocket)
 

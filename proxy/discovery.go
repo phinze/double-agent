@@ -77,7 +77,7 @@ func TestSocket(socketPath string) bool {
 	if err != nil {
 		return false
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	// Send SSH_AGENTC_REQUEST_IDENTITIES message
 	// Format: [length (4 bytes)][type (1 byte)]
@@ -90,7 +90,7 @@ func TestSocket(socketPath string) bool {
 
 	// Try to read response header (5 bytes: 4 for length, 1 for type)
 	header := make([]byte, 5)
-	conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, err := io.ReadFull(conn, header)
 
 	// Check if we got a valid response
