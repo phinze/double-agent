@@ -4,7 +4,10 @@ buildGoModule {
   pname = "double-agent";
   version = "0.1.0";
 
-  src = ./..;
+  src = builtins.path { 
+    path = ./..;
+    name = "double-agent-source";
+  };
 
   vendorHash = null; # No external dependencies
 
