@@ -239,6 +239,9 @@ func testSocketDiscovery() {
 		}
 		fmt.Printf("  %s [%s]\n", socket.Path, status)
 		fmt.Printf("    Modified: %s\n", socket.ModTime.Format("2006-01-02 15:04:05"))
+		if !socket.Valid && socket.Reason != "" {
+			fmt.Printf("    Reason: %s\n", socket.Reason)
+		}
 	}
 
 	fmt.Println()

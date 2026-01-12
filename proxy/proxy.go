@@ -71,9 +71,13 @@ func (ap *AgentProxy) HandleConnection(clientConn net.Conn) {
 	for attempt := 0; attempt < 2; attempt++ {
 		activeSocket := ap.FindActiveSocketCached()
 		if activeSocket == "" {
-			ap.logger.Debug("No active SSH agent socket found",
-				"attempt", attempt+1)
-			if attempt == 1 {
+			if attempt == 0 {
+				ap.logger.Debug("No active SSH agent socket found, retrying discovery",
+					"attempt", attempt+1)
+			} else {
+				// Final attempt failed - log prominently
+				ap.logger.Warn("No active SSH agent socket available",
+					"hint", "Run 'double-agent --test-discovery' to diagnose. Common causes: stale forwarded socket, agent timeout on slow connection, or no SSH agent forwarding.")
 				// Send SSH_AGENT_FAILURE response after final attempt
 				failureMsg := []byte{0, 0, 0, 1, SSH_AGENT_FAILURE}
 				if _, err := clientConn.Write(failureMsg); err != nil {

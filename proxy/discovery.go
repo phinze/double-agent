@@ -16,6 +16,7 @@ type SocketInfo struct {
 	Path    string
 	ModTime time.Time
 	Valid   bool
+	Reason  string // Reason for invalidity (empty if valid)
 }
 
 func DiscoverSockets() ([]SocketInfo, error) {
@@ -66,16 +67,23 @@ func DiscoverSockets() ([]SocketInfo, error) {
 
 	// Validate each socket
 	for i := range sockets {
-		sockets[i].Valid = TestSocket(sockets[i].Path)
+		sockets[i].Valid, sockets[i].Reason = TestSocketWithReason(sockets[i].Path)
 	}
 
 	return sockets, nil
 }
 
+// TestSocket tests if a socket is valid (backwards compatible)
 func TestSocket(socketPath string) bool {
+	valid, _ := TestSocketWithReason(socketPath)
+	return valid
+}
+
+// TestSocketWithReason tests if a socket is valid and returns the reason if not
+func TestSocketWithReason(socketPath string) (bool, string) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
-		return false
+		return false, fmt.Sprintf("connection failed: %v", err)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -85,22 +93,28 @@ func TestSocket(socketPath string) bool {
 
 	_, err = conn.Write(msg)
 	if err != nil {
-		return false
+		return false, fmt.Sprintf("write failed: %v", err)
 	}
 
 	// Try to read response header (5 bytes: 4 for length, 1 for type)
 	header := make([]byte, 5)
-	_ = conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	n, err := io.ReadFull(conn, header)
 
 	// Check if we got a valid response
-	if err != nil || n != 5 {
-		return false
+	if err != nil {
+		return false, fmt.Sprintf("read timeout/error after 5s: %v", err)
+	}
+	if n != 5 {
+		return false, fmt.Sprintf("incomplete response: got %d bytes, expected 5", n)
 	}
 
 	// Check if response type is SSH_AGENT_IDENTITIES_ANSWER or SSH_AGENT_FAILURE
 	responseType := header[4]
-	return responseType == SSH_AGENT_IDENTITIES_ANSWER || responseType == SSH_AGENT_FAILURE
+	if responseType == SSH_AGENT_IDENTITIES_ANSWER || responseType == SSH_AGENT_FAILURE {
+		return true, ""
+	}
+	return false, fmt.Sprintf("unexpected response type: %d", responseType)
 }
 
 func FindActiveSocket() (string, error) {
