@@ -35,17 +35,16 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 	ap.mu.Lock()
 	defer ap.mu.Unlock()
 
-	// Only check every 5 seconds to avoid excessive filesystem scanning
+	// Return cached socket if still within TTL. HandleConnection's retry
+	// logic will invalidate the cache if the socket turns out to be stale.
+	// We intentionally avoid re-validating with TestSocket here because
+	// some SSH agent forwarding implementations (e.g., Blink) cannot
+	// accept a new connection immediately after one closes.
 	if time.Since(ap.lastCheck) < 5*time.Second && ap.activeSocket != "" {
-		// Quick validation that cached socket still works
-		if TestSocket(ap.activeSocket) {
-			return ap.activeSocket
-		}
-		ap.logger.Debug("Cached socket is no longer valid, finding new one",
-			"socket", ap.activeSocket)
+		return ap.activeSocket
 	}
 
-	// Find a new active socket
+	// Find a new active socket (TestSocket is called during discovery)
 	activeSocket, err := FindActiveSocket()
 	if err != nil {
 		ap.logger.Error("Failed to find active socket", "error", err)
@@ -61,6 +60,11 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 
 	ap.activeSocket = activeSocket
 	ap.lastCheck = time.Now()
+
+	// Brief pause after discovery to allow agent forwarding implementations
+	// to recover from the TestSocket validation connection.
+	time.Sleep(15 * time.Millisecond)
+
 	return activeSocket
 }
 
