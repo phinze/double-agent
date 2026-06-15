@@ -10,7 +10,7 @@ in
 
     package = mkOption {
       type = types.package;
-      default = self.packages.${pkgs.system}.double-agent;
+      default = self.packages.${pkgs.stdenv.hostPlatform.system}.double-agent;
       defaultText = literalExpression "pkgs.double-agent";
       description = "The double-agent package to use.";
     };
