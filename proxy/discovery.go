@@ -19,6 +19,24 @@ type SocketInfo struct {
 	Reason  string // Reason for invalidity (empty if valid)
 }
 
+// socketGlobPatterns returns the glob patterns where forwarded SSH agent
+// sockets show up. Discovery sorts all matches by mtime, so order here is
+// irrelevant.
+//
+//   - /tmp/ssh-*/agent.*  OpenSSH < 10 (and most standalone agents) put the
+//     forwarded socket here.
+//   - ~/.ssh/agent/*      OpenSSH >= 10 relocated the forwarded socket out of
+//     world-writable /tmp into this per-user directory; the sockets are named
+//     s.<host>.sshd.<conn>. Without this pattern, double-agent goes blind on
+//     any host running OpenSSH 10+ (e.g. NixOS 26.05).
+func socketGlobPatterns(homeDir string) []string {
+	patterns := []string{"/tmp/ssh-*/agent.*"}
+	if homeDir != "" {
+		patterns = append(patterns, filepath.Join(homeDir, ".ssh", "agent", "*"))
+	}
+	return patterns
+}
+
 func DiscoverSockets() ([]SocketInfo, error) {
 	var sockets []SocketInfo
 
@@ -27,11 +45,14 @@ func DiscoverSockets() ([]SocketInfo, error) {
 		return nil, fmt.Errorf("failed to get current user: %w", err)
 	}
 
-	// Look for SSH agent sockets in /tmp
-	pattern := "/tmp/ssh-*/agent.*"
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("failed to glob for sockets: %w", err)
+	// Look for SSH agent sockets in the well-known forwarding locations.
+	var matches []string
+	for _, pattern := range socketGlobPatterns(currentUser.HomeDir) {
+		m, err := filepath.Glob(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("failed to glob %q for sockets: %w", pattern, err)
+		}
+		matches = append(matches, m...)
 	}
 
 	for _, match := range matches {

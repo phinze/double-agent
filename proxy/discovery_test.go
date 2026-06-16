@@ -42,15 +42,9 @@ func TestDiscoverSockets(t *testing.T) {
 		t.Fatalf("Failed to create regular file: %v", err)
 	}
 	
-	// Override the glob pattern for testing
-	oldPattern := "/tmp/ssh-*/agent.*"
-	t.Cleanup(func() {
-		// Restore original pattern if needed
-		_ = oldPattern
-	})
-	
-	// Since DiscoverSockets uses a hardcoded pattern, we need to test differently
-	// Let's test the socket validation directly
+	// DiscoverSockets globs fixed system locations (see socketGlobPatterns), so
+	// we can't point it at tmpDir. Exercise socket validation directly here and
+	// cover the glob patterns in TestSocketGlobPatterns.
 	
 	// Test socket validation
 	if !TestSocket(socketPath) {
@@ -65,6 +59,38 @@ func TestDiscoverSockets(t *testing.T) {
 	// Test with regular file
 	if TestSocket(regularFile) {
 		t.Error("Expected regular file to fail TestSocket")
+	}
+}
+
+func TestSocketGlobPatterns(t *testing.T) {
+	patterns := socketGlobPatterns("/home/someone")
+
+	// The legacy /tmp location must always be searched.
+	tmpPattern := "/tmp/ssh-*/agent.*"
+	// OpenSSH 10+ relocated forwarded sockets here; the regression we fixed was
+	// that this location went unsearched.
+	homePattern := filepath.Join("/home/someone", ".ssh", "agent", "*")
+
+	for _, want := range []string{tmpPattern, homePattern} {
+		found := false
+		for _, p := range patterns {
+			if p == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("socketGlobPatterns missing %q; got %v", want, patterns)
+		}
+	}
+
+	// With no home directory we can still fall back to the /tmp location rather
+	// than emitting a bogus pattern rooted at the filesystem root.
+	noHome := socketGlobPatterns("")
+	for _, p := range noHome {
+		if p == filepath.Join("", ".ssh", "agent", "*") {
+			t.Errorf("socketGlobPatterns(\"\") produced a rootless pattern: %v", noHome)
+		}
 	}
 }
 
