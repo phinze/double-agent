@@ -23,6 +23,7 @@ func main() {
 		daemon        = flag.Bool("d", false, "Run as daemon (detach from terminal)")
 		daemonLong    = flag.Bool("daemon", false, "Run as daemon (detach from terminal)")
 		testDiscovery = flag.Bool("test-discovery", false, "Test socket discovery and exit")
+		fallback      = flag.String("fallback", "", "Agent socket to use when no forwarded agent answers")
 		healthCheck   = flag.Bool("health", false, "Check if proxy is healthy and exit")
 		showVersion   = flag.Bool("version", false, "Show version and exit")
 		showHelp      = flag.Bool("h", false, "Show help")
@@ -38,6 +39,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "  -v, --verbose        Enable verbose logging\n")
 		fmt.Fprintf(os.Stderr, "  -d, --daemon         Run as daemon (detach from terminal)\n")
 		fmt.Fprintf(os.Stderr, "  --test-discovery     Test socket discovery and exit\n")
+		fmt.Fprintf(os.Stderr, "  --fallback PATH      Agent socket to use when no forwarded agent answers\n")
 		fmt.Fprintf(os.Stderr, "  --health             Check if proxy is healthy and exit\n")
 		fmt.Fprintf(os.Stderr, "  --version            Show version and exit\n")
 		fmt.Fprintf(os.Stderr, "  -h, --help           Show this help message\n\n")
@@ -119,15 +121,15 @@ func main() {
 
 	// Daemonize if requested
 	if *daemon {
-		daemonize(proxySocket, *verbose, logger)
+		daemonize(proxySocket, *fallback, *verbose, logger)
 		return
 	}
 
 	// Run the proxy
-	runProxy(proxySocket, logger)
+	runProxy(proxySocket, expandPath(*fallback, logger), logger)
 }
 
-func runProxy(proxySocket string, logger *slog.Logger) {
+func runProxy(proxySocket, fallback string, logger *slog.Logger) {
 	// Remove existing socket if it exists
 	if err := os.Remove(proxySocket); err != nil && !os.IsNotExist(err) {
 		logger.Debug("Warning: failed to remove existing socket", "error", err)
@@ -148,6 +150,9 @@ func runProxy(proxySocket string, logger *slog.Logger) {
 
 	// Create the proxy
 	agentProxy := proxy.NewAgentProxy(proxySocket, logger)
+	if fallback != "" {
+		agentProxy.SetFallback(fallback)
+	}
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -178,7 +183,7 @@ func runProxy(proxySocket string, logger *slog.Logger) {
 	_ = os.Remove(proxySocket)
 }
 
-func daemonize(proxySocket string, verbose bool, logger *slog.Logger) {
+func daemonize(proxySocket, fallback string, verbose bool, logger *slog.Logger) {
 	// Find the executable path
 	executable, err := os.Executable()
 	if err != nil {
@@ -190,6 +195,9 @@ func daemonize(proxySocket string, verbose bool, logger *slog.Logger) {
 	args := []string{executable}
 	if verbose {
 		args = append(args, "-v")
+	}
+	if fallback != "" {
+		args = append(args, "--fallback", fallback)
 	}
 	args = append(args, proxySocket)
 

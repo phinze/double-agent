@@ -21,6 +21,17 @@ in
       description = "Path where the proxy socket will be created.";
     };
 
+    fallbackSocket = mkOption {
+      type = types.nullOr types.str;
+      default = null;
+      example = "$HOME/.ssh/bankshot-agent.sock";
+      description = ''
+        Agent socket to use when no forwarded agent answers, e.g. one bankshot
+        serves from the laptop for sessions that didn't arrive over ssh. A
+        forwarded agent still wins whenever one answers.
+      '';
+    };
+
     verbose = mkOption {
       type = types.bool;
       default = false;
@@ -68,7 +79,7 @@ in
 
       Service = {
         Type = "simple";
-        ExecStart = "${cfg.package}/bin/double-agent ${optionalString cfg.verbose "-v"} ${cfg.socketPath}";
+        ExecStart = "${cfg.package}/bin/double-agent ${optionalString cfg.verbose "-v"} ${optionalString (cfg.fallbackSocket != null) "--fallback ${cfg.fallbackSocket}"} ${cfg.socketPath}";
         Restart = "always";
         RestartSec = 5;
       };

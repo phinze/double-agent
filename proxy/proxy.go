@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"sync"
 	"time"
 )
@@ -15,13 +16,38 @@ type AgentProxy struct {
 	lastCheck    time.Time
 	activeSocket string
 	logger       *slog.Logger
+	fallback     string                 // agent to use when no forwarded one answers; "" for none
+	discover     func() (string, error) // FindActiveSocket; swapped in tests
 }
 
 func NewAgentProxy(proxySocket string, logger *slog.Logger) *AgentProxy {
 	return &AgentProxy{
 		proxySocket: proxySocket,
 		logger:      logger,
+		discover:    FindActiveSocket,
 	}
+}
+
+// SetFallback names an agent socket to use when discovery finds no live
+// forwarded agent, such as one bankshot serves from the laptop over the
+// tailnet for sessions that arrived without ssh. A forwarded agent still wins
+// whenever one answers.
+func (ap *AgentProxy) SetFallback(path string) {
+	ap.mu.Lock()
+	defer ap.mu.Unlock()
+	ap.fallback = path
+}
+
+// fallbackSocket returns the fallback if it's a socket right now.
+func (ap *AgentProxy) fallbackSocket() string {
+	if ap.fallback == "" {
+		return ""
+	}
+	info, err := os.Stat(ap.fallback)
+	if err != nil || info.Mode()&os.ModeSocket == 0 {
+		return ""
+	}
+	return ap.fallback
 }
 
 func (ap *AgentProxy) InvalidateCache() {
@@ -45,11 +71,23 @@ func (ap *AgentProxy) FindActiveSocketCached() string {
 	}
 
 	// Find a new active socket (TestSocket is called during discovery)
-	activeSocket, err := FindActiveSocket()
+	activeSocket, err := ap.discover()
 	if err != nil {
-		ap.logger.Error("Failed to find active socket", "error", err)
-		ap.activeSocket = ""
-		return ""
+		fallback := ap.fallbackSocket()
+		if fallback == "" {
+			ap.logger.Error("Failed to find active socket", "error", err)
+			ap.activeSocket = ""
+			return ""
+		}
+		// The fallback isn't validated with TestSocket: it's local and
+		// stable, and asking it to list keys can reach all the way to the
+		// laptop.
+		if ap.activeSocket != fallback {
+			ap.logger.Info("No forwarded agent; using fallback", "socket", fallback, "reason", err)
+		}
+		ap.activeSocket = fallback
+		ap.lastCheck = time.Now()
+		return fallback
 	}
 
 	if ap.activeSocket != activeSocket {

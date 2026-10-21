@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -406,5 +407,41 @@ func TestSanitizingHandler(t *testing.T) {
 	}
 	if !bytes.Contains(buf.Bytes(), []byte("SHA256:<redacted>")) {
 		t.Error("Fingerprint not properly sanitized")
+	}
+}
+func TestFallbackWhenNoForwardedAgent(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	dir := t.TempDir()
+	fallback := filepath.Join(dir, "fallback.sock")
+	ln, err := net.Listen("unix", fallback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+
+	ap := NewAgentProxy(filepath.Join(dir, "proxy.sock"), logger)
+	ap.discover = func() (string, error) { return "", errors.New("no active SSH agent socket found") }
+
+	if got := ap.FindActiveSocketCached(); got != "" {
+		t.Errorf("with no fallback set, got %q, want none", got)
+	}
+
+	ap.SetFallback(fallback)
+	ap.InvalidateCache()
+	if got := ap.FindActiveSocketCached(); got != fallback {
+		t.Errorf("with no forwarded agent, got %q, want the fallback", got)
+	}
+
+	ap.SetFallback(filepath.Join(dir, "missing.sock"))
+	ap.InvalidateCache()
+	if got := ap.FindActiveSocketCached(); got != "" {
+		t.Errorf("with a missing fallback, got %q, want none", got)
+	}
+
+	ap.SetFallback(fallback)
+	ap.discover = func() (string, error) { return "/tmp/ssh-x/agent.1", nil }
+	ap.InvalidateCache()
+	if got := ap.FindActiveSocketCached(); got != "/tmp/ssh-x/agent.1" {
+		t.Errorf("with a forwarded agent, got %q, want it over the fallback", got)
 	}
 }
